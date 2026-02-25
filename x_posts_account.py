@@ -1,10 +1,11 @@
 """
-X.com Daily Auto-Poster Agent
-- Posts 2 times/day to X.com
+Bluesky + Mastodon Daily Auto-Poster Agent
+- Posts 2 times/day to BOTH Bluesky and Mastodon
 - Uses MongoDB to prevent duplicate posts
 - Uses Google Gemini (free) for content generation + verification
 - Uses DuckDuckGo search (free, no API key) for fact-checking
-- Runs a Flask web server to keep Render alive (auto-pings every 14 min)
+- Runs Flask web server to keep Render alive (auto-pings every 14 min)
+- 100% FREE - no credit card needed
 """
 
 import os
@@ -15,7 +16,6 @@ import threading
 import traceback
 import schedule
 import requests
-import tweepy
 from datetime import datetime, timezone
 from flask import Flask, jsonify
 from pymongo import MongoClient
@@ -23,14 +23,29 @@ import google.generativeai as genai
 from duckduckgo_search import DDGS
 
 # ──────────────────────────────────────────────
-# LOGGING HELPER
+# LOGGING
 # ──────────────────────────────────────────────
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 # ──────────────────────────────────────────────
 # ENV VARIABLES
+# Set these in Render dashboard:
+#
+# BLUESKY_HANDLE       → your handle e.g. yourname.bsky.social
+# BLUESKY_PASSWORD     → your Bluesky APP password (not login password)
+#                        Create at: bsky.social → Settings → Privacy → App Passwords
+#
+# MASTODON_INSTANCE    → your instance e.g. https://mastodon.social
+# MASTODON_TOKEN       → access token
+#                        Create at: Settings → Development → New Application
+#
+# MONGO_URI            → MongoDB Atlas connection string
+# GEMINI_API_KEY       → Google AI Studio free API key
+# RENDER_URL           → https://your-app.onrender.com
+# POST_TOPIC           → optional, default: "AI, technology, productivity tips"
 # ──────────────────────────────────────────────
+
 def get_env(key, required=True):
     val = os.environ.get(key)
     if required and not val:
@@ -38,67 +53,138 @@ def get_env(key, required=True):
         sys.exit(1)
     return val
 
-TWITTER_API_KEY       = get_env("TWITTER_API_KEY")
-TWITTER_API_SECRET    = get_env("TWITTER_API_SECRET")
-TWITTER_ACCESS_TOKEN  = get_env("TWITTER_ACCESS_TOKEN")
-TWITTER_ACCESS_SECRET = get_env("TWITTER_ACCESS_SECRET")
-TWITTER_BEARER_TOKEN  = get_env("TWITTER_BEARER_TOKEN")
-MONGO_URI             = get_env("MONGO_URI")
-GEMINI_API_KEY        = get_env("GEMINI_API_KEY")
-RENDER_URL            = get_env("RENDER_URL", required=False) or "http://localhost:10000"
-POST_TOPIC            = get_env("POST_TOPIC", required=False) or "AI, technology, productivity tips"
+BLUESKY_HANDLE    = get_env("BLUESKY_HANDLE")
+BLUESKY_PASSWORD  = get_env("BLUESKY_PASSWORD")
+MASTODON_INSTANCE = get_env("MASTODON_INSTANCE").rstrip("/")
+MASTODON_TOKEN    = get_env("MASTODON_TOKEN")
+MONGO_URI         = get_env("MONGO_URI")
+GEMINI_API_KEY    = get_env("GEMINI_API_KEY")
+RENDER_URL        = get_env("RENDER_URL", required=False) or "http://localhost:10000"
+POST_TOPIC        = get_env("POST_TOPIC", required=False) or "AI, technology, productivity tips"
 
-log(f"✅ All env vars loaded. Topic: {POST_TOPIC}")
+log(f"✅ Env vars loaded. Topic: {POST_TOPIC}")
 
 # ──────────────────────────────────────────────
-# INIT FLASK
+# FLASK
 # ──────────────────────────────────────────────
 app = Flask(__name__)
 
 # ──────────────────────────────────────────────
-# INIT MONGODB
+# MONGODB
 # ──────────────────────────────────────────────
 try:
     mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     mongo_client.server_info()
-    db = mongo_client["x_poster"]
+    db = mongo_client["social_poster"]
     posts_col = db["posts"]
     posts_col.create_index("content_hash", unique=True)
     log("✅ MongoDB connected")
 except Exception as e:
-    log(f"❌ MongoDB connection failed: {e}")
+    log(f"❌ MongoDB failed: {e}")
     sys.exit(1)
 
 # ──────────────────────────────────────────────
-# INIT GEMINI
+# GEMINI
 # ──────────────────────────────────────────────
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini = genai.GenerativeModel("gemini-2.5-flash")
+    gemini = genai.GenerativeModel("gemini-1.5-flash")
     test = gemini.generate_content("Say OK")
     log(f"✅ Gemini connected: {test.text.strip()[:20]}")
 except Exception as e:
-    log(f"❌ Gemini init failed: {e}")
+    log(f"❌ Gemini failed: {e}")
     sys.exit(1)
 
 # ──────────────────────────────────────────────
-# INIT TWITTER
+# BLUESKY CLIENT
 # ──────────────────────────────────────────────
+class BlueskyClient:
+    def __init__(self, handle, password):
+        self.handle = handle
+        self.password = password
+        self.base_url = "https://bsky.social/xrpc"
+        self.access_token = None
+        self.did = None
+        self._login()
+
+    def _login(self):
+        r = requests.post(
+            f"{self.base_url}/com.atproto.server.createSession",
+            json={"identifier": self.handle, "password": self.password},
+            timeout=15
+        )
+        r.raise_for_status()
+        data = r.json()
+        self.access_token = data["accessJwt"]
+        self.did = data["did"]
+
+    def post(self, text: str) -> dict:
+        self._login()  # Refresh token before each post
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        r = requests.post(
+            f"{self.base_url}/com.atproto.repo.createRecord",
+            headers={"Authorization": f"Bearer {self.access_token}"},
+            json={
+                "repo": self.did,
+                "collection": "app.bsky.feed.post",
+                "record": {
+                    "$type": "app.bsky.feed.post",
+                    "text": text,
+                    "createdAt": now
+                }
+            },
+            timeout=15
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 try:
-    twitter_client = tweepy.Client(
-        bearer_token=TWITTER_BEARER_TOKEN,
-        consumer_key=TWITTER_API_KEY,
-        consumer_secret=TWITTER_API_SECRET,
-        access_token=TWITTER_ACCESS_TOKEN,
-        access_token_secret=TWITTER_ACCESS_SECRET,
-        wait_on_rate_limit=True,
-    )
-    me = twitter_client.get_me()
-    log(f"✅ Twitter connected as: @{me.data.username}")
+    bluesky = BlueskyClient(BLUESKY_HANDLE, BLUESKY_PASSWORD)
+    log(f"✅ Bluesky connected as: @{BLUESKY_HANDLE}")
 except Exception as e:
-    log(f"❌ Twitter init failed: {e}")
-    log("   → Check your API keys. Access Token must have Read+Write permission!")
+    log(f"❌ Bluesky init failed: {e}")
+    log("   → Check BLUESKY_HANDLE (e.g. you.bsky.social) and BLUESKY_PASSWORD (App Password)")
     sys.exit(1)
+
+
+# ──────────────────────────────────────────────
+# MASTODON CLIENT
+# ──────────────────────────────────────────────
+class MastodonClient:
+    def __init__(self, instance, token):
+        self.instance = instance
+        self.token = token
+        self.headers = {"Authorization": f"Bearer {token}"}
+
+    def verify(self):
+        r = requests.get(
+            f"{self.instance}/api/v1/accounts/verify_credentials",
+            headers=self.headers, timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def post(self, text: str) -> dict:
+        r = requests.post(
+            f"{self.instance}/api/v1/statuses",
+            headers=self.headers,
+            json={"status": text, "visibility": "public"},
+            timeout=15
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+try:
+    mastodon = MastodonClient(MASTODON_INSTANCE, MASTODON_TOKEN)
+    me = mastodon.verify()
+    log(f"✅ Mastodon connected as: @{me.get('username')}@{MASTODON_INSTANCE.replace('https://','')}")
+except Exception as e:
+    log(f"❌ Mastodon init failed: {e}")
+    log("   → Check MASTODON_INSTANCE (e.g. https://mastodon.social) and MASTODON_TOKEN")
+    sys.exit(1)
+
 
 # ──────────────────────────────────────────────
 # HELPERS
@@ -120,92 +206,88 @@ def hash_content(text: str) -> str:
 
 
 def is_duplicate(text: str) -> bool:
-    h = hash_content(text)
-    return posts_col.find_one({"content_hash": h}) is not None
+    return posts_col.find_one({"content_hash": hash_content(text)}) is not None
 
 
-def save_post(text: str, verified: bool, posted: bool, error: str = ""):
-    h = hash_content(text)
+def save_post(text: str, verified: bool, results: dict):
     try:
         posts_col.insert_one({
-            "content_hash": h,
+            "content_hash": hash_content(text),
             "text": text,
             "verified": verified,
-            "posted": posted,
-            "error": error,
+            "results": results,
             "posted_at": datetime.now(timezone.utc),
         })
     except Exception as e:
-        log(f"  [DB Save Error] {e}")
+        log(f"  [DB Error] {e}")
 
 
-def get_past_post_snippets(limit: int = 20) -> list:
+def get_past_snippets(limit: int = 20) -> list:
     recent = posts_col.find({}, {"text": 1}).sort("posted_at", -1).limit(limit)
     return [p["text"][:80] for p in recent]
 
 
 # ──────────────────────────────────────────────
-# CONTENT GENERATION
+# GENERATE POST
 # ──────────────────────────────────────────────
 
 def generate_post() -> str:
-    log("  [Generate] Searching for context...")
-    search_query = f"latest {POST_TOPIC} news {datetime.now().strftime('%B %Y')}"
-    results = search_web(search_query, max_results=4)
-    context_snippets = "\n".join(
-        f"- {r.get('title', '')}: {r.get('body', '')[:120]}" for r in results
+    log("  [Generate] Fetching context...")
+    results = search_web(f"latest {POST_TOPIC} {datetime.now().strftime('%B %Y')}", 4)
+    context = "\n".join(
+        f"- {r.get('title','')}: {r.get('body','')[:120]}" for r in results
     )
-    past_posts = get_past_post_snippets()
-    past_str = "\n".join(f"- {p}" for p in past_posts) if past_posts else "None yet."
+    past = get_past_snippets()
+    past_str = "\n".join(f"- {p}" for p in past) if past else "None yet."
 
-    prompt = f"""You are a social media expert creating engaging X (Twitter) posts.
+    prompt = f"""You are a social media expert creating engaging posts.
 
 Topic: {POST_TOPIC}
 
-Recent web context:
-{context_snippets if context_snippets else 'No context available, use your knowledge.'}
+Recent context:
+{context if context else 'Use your knowledge.'}
 
 Previously posted (DO NOT repeat):
 {past_str}
 
-Write ONE tweet that:
-- Is 240 characters or less
+Write ONE post that:
+- Is 280 characters or less
 - Is engaging, informative, adds genuine value
 - Includes 2-3 relevant hashtags
-- Does NOT repeat any previously posted idea
+- Has a unique angle or fresh insight
 - Is factually accurate
 
-Return ONLY the tweet text. No quotes around it."""
+Return ONLY the post text. No quotes. No preamble."""
 
     log("  [Generate] Calling Gemini...")
     response = gemini.generate_content(prompt)
-    tweet = response.text.strip().strip('"').strip("'")
-    if len(tweet) > 280:
-        tweet = tweet[:277] + "..."
-    log(f"  [Generate] Result: {tweet[:80]}...")
-    return tweet
+    post = response.text.strip().strip('"').strip("'")
+    if len(post) > 280:
+        post = post[:277] + "..."
+    log(f"  [Generate] Got ({len(post)} chars): {post[:80]}...")
+    return post
 
 
 # ──────────────────────────────────────────────
-# AI VERIFICATION
+# VERIFY POST
 # ──────────────────────────────────────────────
 
 def verify_post(text: str) -> tuple:
     log("  [Verify] Fact-checking...")
-    search_results = search_web(text[:60], max_results=3)
+    results = search_web(text[:60], max_results=3)
     evidence = "\n".join(
-        f"- {r.get('title', '')}: {r.get('body', '')[:100]}" for r in search_results
+        f"- {r.get('title','')}: {r.get('body','')[:100]}" for r in results
     )
-    prompt = f"""You are a fact-checking AI. Evaluate this tweet:
+    prompt = f"""You are a fact-checking AI. Evaluate this social media post:
 
-        TWEET: "{text}"
-        
-        Web evidence:
-        {evidence if evidence else 'No specific evidence found.'}
-        
-        Reply with ONLY one of:
-        VALID: <one sentence reason>
-        INVALID: <one sentence reason>"""
+POST: "{text}"
+
+Web evidence:
+{evidence if evidence else 'No specific evidence found.'}
+
+Reply with ONLY one of:
+VALID: <one sentence reason>
+INVALID: <one sentence reason>"""
 
     response = gemini.generate_content(prompt)
     verdict = response.text.strip()
@@ -220,70 +302,97 @@ def verify_post(text: str) -> tuple:
 
 def create_and_post():
     log("=" * 50)
-    log("Starting post creation flow...")
-    result = {"success": False, "error": "", "tweet": "", "step": "init"}
+    log("Starting post creation...")
+    result = {
+        "success": False,
+        "error": "",
+        "post": "",
+        "bluesky": {"posted": False, "error": "", "url": ""},
+        "mastodon": {"posted": False, "error": "", "url": ""},
+    }
 
     try:
         for attempt in range(1, 6):
             log(f"Attempt {attempt}/5")
-            result["step"] = f"attempt_{attempt}"
 
             # Generate
             try:
-                tweet_text = generate_post()
+                post_text = generate_post()
             except Exception as e:
-                err = f"Generation failed: {str(e)}"
-                log(f"  {err}\n{traceback.format_exc()}")
-                result["error"] = err
+                result["error"] = f"Generation failed: {e}"
+                log(f"  ❌ {result['error']}\n{traceback.format_exc()}")
                 time.sleep(3)
                 continue
 
-            result["tweet"] = tweet_text
+            result["post"] = post_text
 
             # Duplicate check
-            if is_duplicate(tweet_text):
-                log("  Duplicate, regenerating...")
+            if is_duplicate(post_text):
+                log("  Duplicate detected, regenerating...")
                 result["error"] = "duplicate"
                 continue
 
             # Verify
             try:
-                is_valid, reason = verify_post(tweet_text)
+                is_valid, reason = verify_post(post_text)
             except Exception as e:
-                err = f"Verification failed: {str(e)}"
-                log(f"  {err}\n{traceback.format_exc()}")
-                result["error"] = err
+                result["error"] = f"Verification error: {e}"
+                log(f"  ❌ {result['error']}")
                 continue
 
             if not is_valid:
-                log(f"  Rejected by AI: {reason}")
                 result["error"] = f"AI rejected: {reason}"
+                log(f"  ❌ {result['error']}")
                 continue
 
-            # Post
-            log("  Posting to X...")
-            result["step"] = "posting"
+            # ── Post to Bluesky ──
+            log("  Posting to Bluesky...")
             try:
-                resp = twitter_client.create_tweet(text=tweet_text)
-                tweet_id = resp.data["id"]
-                log(f"  ✅ Posted! Tweet ID: {tweet_id}")
-                save_post(tweet_text, verified=True, posted=True)
-                result.update({"success": True, "tweet_id": str(tweet_id), "error": ""})
-                return result
-            except tweepy.TweepyException as e:
-                err = f"Twitter API error: {str(e)}"
-                log(f"  ❌ {err}")
-                save_post(tweet_text, verified=True, posted=False, error=err)
-                result["error"] = err
-                return result
+                bs_resp = bluesky.post(post_text)
+                uri = bs_resp.get("uri", "")
+                result["bluesky"]["posted"] = True
+                result["bluesky"]["url"] = uri
+                log(f"  ✅ Bluesky: {uri}")
+            except Exception as e:
+                result["bluesky"]["error"] = str(e)
+                log(f"  ❌ Bluesky failed: {e}")
 
-        log("❌ All attempts exhausted.")
+            # ── Post to Mastodon ──
+            log("  Posting to Mastodon...")
+            try:
+                mt_resp = mastodon.post(post_text)
+                url = mt_resp.get("url", "")
+                result["mastodon"]["posted"] = True
+                result["mastodon"]["url"] = url
+                log(f"  ✅ Mastodon: {url}")
+            except Exception as e:
+                result["mastodon"]["error"] = str(e)
+                log(f"  ❌ Mastodon failed: {e}")
+
+            # Save if at least one succeeded
+            if result["bluesky"]["posted"] or result["mastodon"]["posted"]:
+                save_post(post_text, verified=True, results={
+                    "bluesky": result["bluesky"],
+                    "mastodon": result["mastodon"],
+                })
+                result["success"] = True
+                result["error"] = ""
+                log("✅ Post cycle complete!")
+            else:
+                result["error"] = (
+                    f"Both failed | Bluesky: {result['bluesky']['error']} "
+                    f"| Mastodon: {result['mastodon']['error']}"
+                )
+                log(f"❌ {result['error']}")
+
+            return result
+
+        log("❌ All 5 attempts exhausted.")
         return result
 
     except Exception as e:
-        err = f"Unexpected: {str(e)}"
-        log(f"❌ {err}\n{traceback.format_exc()}")
-        result["error"] = err
+        result["error"] = f"Unexpected error: {str(e)}"
+        log(f"❌ {result['error']}\n{traceback.format_exc()}")
         return result
 
 
@@ -301,7 +410,7 @@ def run_scheduler():
 
 
 # ──────────────────────────────────────────────
-# SELF-PING
+# SELF-PING (keeps Render free tier alive)
 # ──────────────────────────────────────────────
 
 def self_ping():
@@ -322,18 +431,22 @@ def self_ping():
 @app.route("/")
 def index():
     total = posts_col.count_documents({})
-    verified = posts_col.count_documents({"verified": True})
-    posted = posts_col.count_documents({"posted": True})
-    latest = list(posts_col.find({}, {"text": 1, "posted_at": 1, "posted": 1, "_id": 0})
-                  .sort("posted_at", -1).limit(5))
+    bs_posted = posts_col.count_documents({"results.bluesky.posted": True})
+    mt_posted = posts_col.count_documents({"results.mastodon.posted": True})
+    latest = list(
+        posts_col.find({}, {"text": 1, "posted_at": 1, "results": 1, "_id": 0})
+        .sort("posted_at", -1).limit(5)
+    )
     return jsonify({
         "status": "running",
-        "total_posts": total,
-        "verified_posts": verified,
-        "successfully_posted": posted,
+        "platforms": ["Bluesky", "Mastodon"],
         "topic": POST_TOPIC,
         "schedule": "09:00 UTC and 18:00 UTC daily",
-        "render_url": RENDER_URL,
+        "stats": {
+            "total_attempts": total,
+            "bluesky_posted": bs_posted,
+            "mastodon_posted": mt_posted,
+        },
         "latest_posts": latest,
     })
 
@@ -345,7 +458,7 @@ def health():
 
 @app.route("/post-now")
 def post_now():
-    log("[/post-now] Manual trigger received")
+    log("[/post-now] Manual trigger")
     result = create_and_post()
     return jsonify(result)
 
@@ -356,21 +469,28 @@ def list_posts():
     return jsonify(posts)
 
 
-@app.route("/test-twitter")
-def test_twitter():
-    """Test Twitter connection without posting."""
+@app.route("/test-bluesky")
+def test_bluesky():
     try:
-        me = twitter_client.get_me()
-        return jsonify({"ok": True, "username": me.data.username, "id": str(me.data.id)})
+        bluesky._login()
+        return jsonify({"ok": True, "handle": BLUESKY_HANDLE, "did": bluesky.did})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/test-mastodon")
+def test_mastodon():
+    try:
+        data = mastodon.verify()
+        return jsonify({"ok": True, "username": data.get("username"), "instance": MASTODON_INSTANCE})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
 
 @app.route("/test-gemini")
 def test_gemini():
-    """Test Gemini without posting."""
     try:
-        r = gemini.generate_content("Write a 10-word tweet about AI.")
+        r = gemini.generate_content("Write a 10-word post about AI.")
         return jsonify({"ok": True, "response": r.text.strip()})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
