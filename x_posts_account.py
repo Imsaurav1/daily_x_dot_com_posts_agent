@@ -74,7 +74,7 @@ except Exception as e:
 # ──────────────────────────────────────────────
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini = genai.GenerativeModel("gemini-1.5-flash")
+    gemini = genai.GenerativeModel("gemini-2.5-flash")
     test = gemini.generate_content("Say OK")
     log(f"✅ Gemini connected: {test.text.strip()[:20]}")
 except Exception as e:
