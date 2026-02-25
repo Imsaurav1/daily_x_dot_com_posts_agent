@@ -1,7 +1,6 @@
 flask==3.0.3
-tweepy==4.14.0
 pymongo==4.7.3
 schedule==1.2.2
 requests==2.32.3
-google-generativeai==0.7.2
+google-generativeai==0.8.3
 duckduckgo-search==6.2.6
