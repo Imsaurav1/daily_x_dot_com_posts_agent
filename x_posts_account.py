@@ -56,7 +56,7 @@ MASTODON_TOKEN    = get_env("MASTODON_TOKEN")
 MONGO_URI         = get_env("MONGO_URI")
 GROQ_API_KEY      = get_env("GROQ_API_KEY")
 RENDER_URL        = get_env("RENDER_URL", required=False) or "http://localhost:10000"
-POST_TOPIC        = get_env("POST_TOPIC", required=False) or "AI, technology, productivity tips"
+POST_TOPIC        = get_env("POST_TOPIC", required=False) 
 
 log(f"Env vars loaded. Topic: {POST_TOPIC}")
 
