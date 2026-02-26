@@ -1,11 +1,12 @@
 """
 Bluesky + Mastodon Daily Auto-Poster Agent
-- Posts 2 times/day to BOTH Bluesky and Mastodon
-- Uses MongoDB to prevent duplicate posts
-- Uses Google Gemini (free) for content generation + verification
-- Uses DuckDuckGo search (free, no API key) for fact-checking
-- Runs Flask web server to keep Render alive (auto-pings every 14 min)
-- 100% FREE - no credit card needed
+- Fetches TODAY's real news from the web
+- AI picks the best news item
+- Writes an engaging post based on that news
+- Posts to Bluesky AND Mastodon
+- MongoDB prevents duplicate posts
+- Flask server keeps Render alive via self-ping
+- 100% FREE
 """
 
 import os
@@ -22,34 +23,29 @@ from pymongo import MongoClient
 import google.generativeai as genai
 from duckduckgo_search import DDGS
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # LOGGING
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
-# ──────────────────────────────────────────────
-# ENV VARIABLES
-# Set these in Render dashboard:
+# ----------------------------------------------
+# ENV VARIABLES - Set in Render dashboard:
 #
-# BLUESKY_HANDLE       → your handle e.g. yourname.bsky.social
-# BLUESKY_PASSWORD     → your Bluesky APP password (not login password)
-#                        Create at: bsky.social → Settings → Privacy → App Passwords
-#
-# MASTODON_INSTANCE    → your instance e.g. https://mastodon.social
-# MASTODON_TOKEN       → access token
-#                        Create at: Settings → Development → New Application
-#
-# MONGO_URI            → MongoDB Atlas connection string
-# GEMINI_API_KEY       → Google AI Studio free API key
-# RENDER_URL           → https://your-app.onrender.com
-# POST_TOPIC           → optional, default: "AI, technology, productivity tips"
-# ──────────────────────────────────────────────
+# BLUESKY_HANDLE      e.g. yourname.bsky.social
+# BLUESKY_PASSWORD    App Password from bsky.social Settings
+# MASTODON_INSTANCE   e.g. https://mastodon.social
+# MASTODON_TOKEN      Access token from Mastodon Settings > Development
+# MONGO_URI           MongoDB Atlas connection string
+# GEMINI_API_KEY      Google AI Studio free key
+# RENDER_URL          https://your-app.onrender.com
+# POST_TOPIC          e.g. "AI, tech startups, productivity"
+# ----------------------------------------------
 
 def get_env(key, required=True):
     val = os.environ.get(key)
     if required and not val:
-        log(f"❌ Missing required env var: {key}")
+        log(f"Missing required env var: {key}")
         sys.exit(1)
     return val
 
@@ -62,42 +58,42 @@ GEMINI_API_KEY    = get_env("GEMINI_API_KEY")
 RENDER_URL        = get_env("RENDER_URL", required=False) or "http://localhost:10000"
 POST_TOPIC        = get_env("POST_TOPIC", required=False) or "AI, technology, productivity tips"
 
-log(f"✅ Env vars loaded. Topic: {POST_TOPIC}")
+log(f"Env vars loaded. Topic: {POST_TOPIC}")
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # FLASK
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 app = Flask(__name__)
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # MONGODB
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 try:
     mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     mongo_client.server_info()
     db = mongo_client["social_poster"]
     posts_col = db["posts"]
     posts_col.create_index("content_hash", unique=True)
-    log("✅ MongoDB connected")
+    log("MongoDB connected")
 except Exception as e:
-    log(f"❌ MongoDB failed: {e}")
+    log(f"MongoDB failed: {e}")
     sys.exit(1)
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # GEMINI
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini = genai.GenerativeModel("gemini-2.5-flash")
+    gemini = genai.GenerativeModel("gemini-1.5-flash")
     test = gemini.generate_content("Say OK")
-    log(f"✅ Gemini connected: {test.text.strip()[:20]}")
+    log(f"Gemini connected: {test.text.strip()[:20]}")
 except Exception as e:
-    log(f"❌ Gemini failed: {e}")
+    log(f"Gemini failed: {e}")
     sys.exit(1)
 
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # BLUESKY CLIENT
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 class BlueskyClient:
     def __init__(self, handle, password):
         self.handle = handle
@@ -118,8 +114,8 @@ class BlueskyClient:
         self.access_token = data["accessJwt"]
         self.did = data["did"]
 
-    def post(self, text: str) -> dict:
-        self._login()  # Refresh token before each post
+    def post(self, text):
+        self._login()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         r = requests.post(
             f"{self.base_url}/com.atproto.repo.createRecord",
@@ -138,19 +134,16 @@ class BlueskyClient:
         r.raise_for_status()
         return r.json()
 
-
 try:
     bluesky = BlueskyClient(BLUESKY_HANDLE, BLUESKY_PASSWORD)
-    log(f"✅ Bluesky connected as: @{BLUESKY_HANDLE}")
+    log(f"Bluesky connected as: @{BLUESKY_HANDLE}")
 except Exception as e:
-    log(f"❌ Bluesky init failed: {e}")
-    log("   → Check BLUESKY_HANDLE (e.g. you.bsky.social) and BLUESKY_PASSWORD (App Password)")
+    log(f"Bluesky init failed: {e}")
     sys.exit(1)
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # MASTODON CLIENT
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 class MastodonClient:
     def __init__(self, instance, token):
         self.instance = instance
@@ -165,7 +158,7 @@ class MastodonClient:
         r.raise_for_status()
         return r.json()
 
-    def post(self, text: str) -> dict:
+    def post(self, text):
         r = requests.post(
             f"{self.instance}/api/v1/statuses",
             headers=self.headers,
@@ -175,41 +168,35 @@ class MastodonClient:
         r.raise_for_status()
         return r.json()
 
-
 try:
     mastodon = MastodonClient(MASTODON_INSTANCE, MASTODON_TOKEN)
     me = mastodon.verify()
-    log(f"✅ Mastodon connected as: @{me.get('username')}@{MASTODON_INSTANCE.replace('https://','')}")
+    log(f"Mastodon connected as: @{me.get('username')}")
 except Exception as e:
-    log(f"❌ Mastodon init failed: {e}")
-    log("   → Check MASTODON_INSTANCE (e.g. https://mastodon.social) and MASTODON_TOKEN")
+    log(f"Mastodon init failed: {e}")
     sys.exit(1)
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # HELPERS
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
-def search_web(query: str, max_results: int = 5) -> list:
+def search_web(query, max_results=5):
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=max_results))
-        log(f"  [Search] {len(results)} results for: {query[:50]}")
+        log(f"  [Search] {len(results)} results for: {query[:60]}")
         return results
     except Exception as e:
         log(f"  [Search Error] {e}")
         return []
 
-
-def hash_content(text: str) -> str:
+def hash_content(text):
     return hashlib.sha256(text.strip().lower().encode()).hexdigest()
 
-
-def is_duplicate(text: str) -> bool:
+def is_duplicate(text):
     return posts_col.find_one({"content_hash": hash_content(text)}) is not None
 
-
-def save_post(text: str, verified: bool, results: dict):
+def save_post(text, verified, results):
     try:
         posts_col.insert_one({
             "content_hash": hash_content(text),
@@ -221,84 +208,164 @@ def save_post(text: str, verified: bool, results: dict):
     except Exception as e:
         log(f"  [DB Error] {e}")
 
-
-def get_past_snippets(limit: int = 20) -> list:
+def get_past_snippets(limit=20):
     recent = posts_col.find({}, {"text": 1}).sort("posted_at", -1).limit(limit)
     return [p["text"][:80] for p in recent]
 
+# ----------------------------------------------
+# STEP 1: FETCH TODAY'S REAL NEWS
+# ----------------------------------------------
 
-# ──────────────────────────────────────────────
-# GENERATE POST
-# ──────────────────────────────────────────────
+def fetch_latest_news():
+    today = datetime.now().strftime("%B %d %Y")
+    queries = [
+        f"AI artificial intelligence news today {today}",
+        f"tech startup news today {today}",
+        f"technology innovation latest {today}",
+        f"AI tools productivity update {today}",
+    ]
+    all_news = []
+    for q in queries:
+        results = search_web(q, max_results=5)
+        for r in results:
+            title = r.get("title", "").strip()
+            body = r.get("body", "").strip()
+            href = r.get("href", "")
+            if title and body and len(body) > 50:
+                all_news.append({
+                    "title": title,
+                    "body": body[:300],
+                    "url": href,
+                })
 
-def generate_post() -> str:
-    log("  [Generate] Fetching context...")
-    results = search_web(f"latest {POST_TOPIC} {datetime.now().strftime('%B %Y')}", 4)
-    context = "\n".join(
-        f"- {r.get('title','')}: {r.get('body','')[:120]}" for r in results
+    # Deduplicate by title
+    seen = set()
+    unique = []
+    for n in all_news:
+        if n["title"] not in seen:
+            seen.add(n["title"])
+            unique.append(n)
+
+    log(f"  [News] {len(unique)} unique news items fetched")
+    return unique
+
+# ----------------------------------------------
+# STEP 2: AI PICKS BEST NEWS
+# ----------------------------------------------
+
+def pick_best_news(news_items, past_snippets):
+    if not news_items:
+        return {}
+
+    news_list = "\n\n".join(
+        f"[{i+1}] {n['title']}\n    {n['body'][:150]}"
+        for i, n in enumerate(news_items[:15])
     )
+    past_str = "\n".join(f"- {p}" for p in past_snippets) if past_snippets else "None."
+
+    prompt = f"""You are a social media news curator. Pick the BEST news to post about today.
+
+NEWS ITEMS:
+{news_list}
+
+ALREADY POSTED (avoid these topics):
+{past_str}
+
+Choose the ONE news item that:
+- Is most interesting, surprising, or impactful
+- Has NOT been covered in past posts
+- Would get most engagement on social media
+- Is about AI, tech startups, or productivity
+
+Reply with ONLY the number. Example: 4"""
+
+    log("  [Pick] AI selecting best news...")
+    response = gemini.generate_content(prompt)
+    pick = response.text.strip().strip(".")
+    try:
+        idx = int(pick) - 1
+        if 0 <= idx < len(news_items):
+            chosen = news_items[idx]
+            log(f"  [Pick] Selected: {chosen['title'][:70]}...")
+            return chosen
+    except Exception:
+        pass
+    log("  [Pick] Fallback to first item")
+    return news_items[0] if news_items else {}
+
+# ----------------------------------------------
+# STEP 3: WRITE POST FROM NEWS
+# ----------------------------------------------
+
+def generate_post():
+    log("  [Generate] Fetching today's news...")
+    news_items = fetch_latest_news()
     past = get_past_snippets()
+
+    if not news_items:
+        log("  [Generate] No news found, using topic knowledge")
+        news_context = f"Write about a recent trend in {POST_TOPIC}"
+    else:
+        best = pick_best_news(news_items, past)
+        if not best:
+            news_context = f"Write about a recent trend in {POST_TOPIC}"
+        else:
+            news_context = f"HEADLINE: {best.get('title', '')}\nDETAILS: {best.get('body', '')}"
+            log(f"  [Generate] Writing post for: {best.get('title','')[:60]}...")
+
     past_str = "\n".join(f"- {p}" for p in past) if past else "None yet."
 
-    prompt = f"""You are a social media expert creating engaging posts.
+    prompt = f"""You are a viral social media writer. Write an engaging post based on this real news:
 
-Topic: {POST_TOPIC}
+{news_context}
 
-Recent context:
-{context if context else 'Use your knowledge.'}
-
-Previously posted (DO NOT repeat):
+PREVIOUSLY POSTED (do NOT repeat these topics):
 {past_str}
 
 Write ONE post that:
-- Is 280 characters or less
-- Is engaging, informative, adds genuine value
-- Includes 2-3 relevant hashtags
-- Has a unique angle or fresh insight
-- Is factually accurate
+- Opens with a hook (shocking fact, bold statement, or question)
+- Explains the news in simple, exciting language
+- Adds a "why this matters" insight
+- Has 2-3 hashtags at the end
+- Is under 260 characters total
+- Contains NO URLs
 
-Return ONLY the post text. No quotes. No preamble."""
+Good example:
+"Google's new AI just outscored human doctors in medical diagnosis tests. Healthcare is about to change forever. Are we ready? #AI #HealthTech #FutureOfMedicine"
 
-    log("  [Generate] Calling Gemini...")
+Return ONLY the post text. Nothing else."""
+
+    log("  [Generate] Writing with Gemini...")
     response = gemini.generate_content(prompt)
     post = response.text.strip().strip('"').strip("'")
     if len(post) > 280:
         post = post[:277] + "..."
-    log(f"  [Generate] Got ({len(post)} chars): {post[:80]}...")
+    log(f"  [Generate] Done ({len(post)} chars): {post[:80]}...")
     return post
 
+# ----------------------------------------------
+# STEP 4: VERIFY POST
+# ----------------------------------------------
 
-# ──────────────────────────────────────────────
-# VERIFY POST
-# ──────────────────────────────────────────────
-
-def verify_post(text: str) -> tuple:
+def verify_post(text):
     log("  [Verify] Fact-checking...")
-    results = search_web(text[:60], max_results=3)
+    search_results = search_web(text[:60], max_results=3)
     evidence = "\n".join(
-        f"- {r.get('title','')}: {r.get('body','')[:100]}" for r in results
+        f"- {r.get('title','')}: {r.get('body','')[:100]}"
+        for r in search_results
     )
-    prompt = f"""You are a social media expert creating engaging posts.
-        
-        Topic: {POST_TOPIC}
-        
-        Recent context:
-        {context if context else 'Use your knowledge.'}
-        
-        Previously posted (DO NOT repeat):
-        {past_str}
-        
-        Write ONE post that:
-        - Is 280 characters or less
-        - Naturally weaves 2-3 hashtags INSIDE the text, not at the end
-        - Is specific, data-driven, and references real current trends
-        - Has a hook in the first line
-        - Is factually accurate
-        
-        Example format:
-        "GPT-4 cut our #StartupCosts by 40% in Q1. Here's how we used #AI to automate customer support and save 200 hrs/month. #TechProductivity"
-        
-        Return ONLY the post text. No quotes. No preamble."""
+    evidence_str = evidence if evidence else "No specific evidence found."
+
+    prompt = f"""You are a fact-checking AI. Evaluate this social media post:
+
+POST: "{text}"
+
+Web evidence:
+{evidence_str}
+
+Reply with ONLY one of:
+VALID: <one sentence reason>
+INVALID: <one sentence reason>"""
 
     response = gemini.generate_content(prompt)
     verdict = response.text.strip()
@@ -306,10 +373,9 @@ def verify_post(text: str) -> tuple:
     log(f"  [Verify] {verdict[:80]}")
     return is_valid, verdict
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # MAIN POST FLOW
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def create_and_post():
     log("=" * 50)
@@ -331,7 +397,7 @@ def create_and_post():
                 post_text = generate_post()
             except Exception as e:
                 result["error"] = f"Generation failed: {e}"
-                log(f"  ❌ {result['error']}\n{traceback.format_exc()}")
+                log(f"  {result['error']}\n{traceback.format_exc()}")
                 time.sleep(3)
                 continue
 
@@ -339,7 +405,7 @@ def create_and_post():
 
             # Duplicate check
             if is_duplicate(post_text):
-                log("  Duplicate detected, regenerating...")
+                log("  Duplicate, regenerating...")
                 result["error"] = "duplicate"
                 continue
 
@@ -348,37 +414,35 @@ def create_and_post():
                 is_valid, reason = verify_post(post_text)
             except Exception as e:
                 result["error"] = f"Verification error: {e}"
-                log(f"  ❌ {result['error']}")
+                log(f"  {result['error']}")
                 continue
 
             if not is_valid:
                 result["error"] = f"AI rejected: {reason}"
-                log(f"  ❌ {result['error']}")
+                log(f"  {result['error']}")
                 continue
 
-            # ── Post to Bluesky ──
+            # Post to Bluesky
             log("  Posting to Bluesky...")
             try:
                 bs_resp = bluesky.post(post_text)
-                uri = bs_resp.get("uri", "")
                 result["bluesky"]["posted"] = True
-                result["bluesky"]["url"] = uri
-                log(f"  ✅ Bluesky: {uri}")
+                result["bluesky"]["url"] = bs_resp.get("uri", "")
+                log(f"  Bluesky OK: {bs_resp.get('uri','')}")
             except Exception as e:
                 result["bluesky"]["error"] = str(e)
-                log(f"  ❌ Bluesky failed: {e}")
+                log(f"  Bluesky failed: {e}")
 
-            # ── Post to Mastodon ──
+            # Post to Mastodon
             log("  Posting to Mastodon...")
             try:
                 mt_resp = mastodon.post(post_text)
-                url = mt_resp.get("url", "")
                 result["mastodon"]["posted"] = True
-                result["mastodon"]["url"] = url
-                log(f"  ✅ Mastodon: {url}")
+                result["mastodon"]["url"] = mt_resp.get("url", "")
+                log(f"  Mastodon OK: {mt_resp.get('url','')}")
             except Exception as e:
                 result["mastodon"]["error"] = str(e)
-                log(f"  ❌ Mastodon failed: {e}")
+                log(f"  Mastodon failed: {e}")
 
             # Save if at least one succeeded
             if result["bluesky"]["posted"] or result["mastodon"]["posted"]:
@@ -388,59 +452,52 @@ def create_and_post():
                 })
                 result["success"] = True
                 result["error"] = ""
-                log("✅ Post cycle complete!")
+                log("Post cycle complete!")
             else:
-                result["error"] = (
-                    f"Both failed | Bluesky: {result['bluesky']['error']} "
-                    f"| Mastodon: {result['mastodon']['error']}"
-                )
-                log(f"❌ {result['error']}")
+                result["error"] = f"Both failed | BS: {result['bluesky']['error']} | MT: {result['mastodon']['error']}"
+                log(result["error"])
 
             return result
 
-        log("❌ All 5 attempts exhausted.")
+        log("All attempts exhausted.")
         return result
 
     except Exception as e:
-        result["error"] = f"Unexpected error: {str(e)}"
-        log(f"❌ {result['error']}\n{traceback.format_exc()}")
+        result["error"] = f"Unexpected: {str(e)}"
+        log(f"{result['error']}\n{traceback.format_exc()}")
         return result
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # SCHEDULER
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 def run_scheduler():
     schedule.every().day.at("08:00").do(create_and_post)
     schedule.every().day.at("12:00").do(create_and_post)
     schedule.every().day.at("17:00").do(create_and_post)
     schedule.every().day.at("21:00").do(create_and_post)
-    schedule.every().day.at("03:00").do(create_and_post)
-    log("[Scheduler] Posts at 09:00 UTC and 18:00 UTC daily.")
+    log("[Scheduler] Posts at 08:00, 12:00, 17:00, 21:00 UTC daily.")
     while True:
         schedule.run_pending()
         time.sleep(30)
 
-
-# ──────────────────────────────────────────────
-# SELF-PING (keeps Render free tier alive)
-# ──────────────────────────────────────────────
+# ----------------------------------------------
+# SELF-PING (keeps Render alive)
+# ----------------------------------------------
 
 def self_ping():
     time.sleep(90)
     while True:
         try:
             r = requests.get(f"{RENDER_URL}/health", timeout=10)
-            log(f"[Ping] {r.status_code} → {RENDER_URL}/health")
+            log(f"[Ping] {r.status_code} -> {RENDER_URL}/health")
         except Exception as e:
             log(f"[Ping] Failed: {e}")
         time.sleep(14 * 60)
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # FLASK ROUTES
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 @app.route("/")
 def index():
@@ -455,7 +512,7 @@ def index():
         "status": "running",
         "platforms": ["Bluesky", "Mastodon"],
         "topic": POST_TOPIC,
-        "schedule": "09:00 UTC and 18:00 UTC daily",
+        "schedule": "08:00, 12:00, 17:00, 21:00 UTC daily (4 posts/day)",
         "stats": {
             "total_attempts": total,
             "bluesky_posted": bs_posted,
@@ -464,11 +521,9 @@ def index():
         "latest_posts": latest,
     })
 
-
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.now(timezone.utc).isoformat()})
-
 
 @app.route("/post-now")
 def post_now():
@@ -476,12 +531,10 @@ def post_now():
     result = create_and_post()
     return jsonify(result)
 
-
 @app.route("/posts")
 def list_posts():
     posts = list(posts_col.find({}, {"_id": 0}).sort("posted_at", -1).limit(50))
     return jsonify(posts)
-
 
 @app.route("/test-bluesky")
 def test_bluesky():
@@ -491,7 +544,6 @@ def test_bluesky():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
-
 @app.route("/test-mastodon")
 def test_mastodon():
     try:
@@ -499,7 +551,6 @@ def test_mastodon():
         return jsonify({"ok": True, "username": data.get("username"), "instance": MASTODON_INSTANCE})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
-
 
 @app.route("/test-gemini")
 def test_gemini():
@@ -509,10 +560,9 @@ def test_gemini():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
-
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 # ENTRY POINT
-# ──────────────────────────────────────────────
+# ----------------------------------------------
 
 if __name__ == "__main__":
     threading.Thread(target=run_scheduler, daemon=True).start()
