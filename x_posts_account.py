@@ -20,7 +20,7 @@ import requests
 from datetime import datetime, timezone
 from flask import Flask, jsonify
 from pymongo import MongoClient
-import google.generativeai as genai
+from groq import Groq
 from duckduckgo_search import DDGS
 
 # ----------------------------------------------
@@ -37,7 +37,7 @@ def log(msg):
 # MASTODON_INSTANCE   e.g. https://mastodon.social
 # MASTODON_TOKEN      Access token from Mastodon Settings > Development
 # MONGO_URI           MongoDB Atlas connection string
-# GEMINI_API_KEY      Google AI Studio free key
+# GROQ_API_KEY        Get free key at console.groq.com
 # RENDER_URL          https://your-app.onrender.com
 # POST_TOPIC          e.g. "AI, tech startups, productivity"
 # ----------------------------------------------
@@ -54,7 +54,7 @@ BLUESKY_PASSWORD  = get_env("BLUESKY_PASSWORD")
 MASTODON_INSTANCE = get_env("MASTODON_INSTANCE").rstrip("/")
 MASTODON_TOKEN    = get_env("MASTODON_TOKEN")
 MONGO_URI         = get_env("MONGO_URI")
-GEMINI_API_KEY    = get_env("GEMINI_API_KEY")
+GROQ_API_KEY      = get_env("GROQ_API_KEY")
 RENDER_URL        = get_env("RENDER_URL", required=False) or "http://localhost:10000"
 POST_TOPIC        = get_env("POST_TOPIC", required=False) or "AI, technology, productivity tips"
 
@@ -80,16 +80,48 @@ except Exception as e:
     sys.exit(1)
 
 # ----------------------------------------------
-# GEMINI
+# GROQ
 # ----------------------------------------------
 try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini = genai.GenerativeModel("gemini-2.5-flash")
-    test = gemini.generate_content("Say OK")
-    log(f"Gemini connected: {test.text.strip()[:20]}")
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    test = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": "Say OK"}],
+        max_tokens=5,
+    )
+    log(f"Groq connected: {test.choices[0].message.content.strip()}")
 except Exception as e:
-    log(f"Gemini failed: {e}")
+    log(f"Groq failed: {e}")
     sys.exit(1)
+
+# ----------------------------------------------
+# GROQ CALL HELPER (handles rate limits)
+# ----------------------------------------------
+
+def gemini_call(prompt, retries=3):
+    """Call Groq with automatic retry on rate limit."""
+    for attempt in range(retries):
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
+                temperature=0.7,
+            )
+            # Return object with .text for compatibility
+            class _Resp:
+                def __init__(self, text):
+                    self.text = text
+            return _Resp(response.choices[0].message.content)
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "rate" in err.lower() or "limit" in err.lower():
+                wait = 30 * (attempt + 1)
+                log(f"  [Groq] Rate limited, waiting {wait}s before retry {attempt+1}/{retries}...")
+                time.sleep(wait)
+                continue
+            raise
+    raise Exception("Groq rate limit exceeded after all retries. Try again later.")
 
 # ----------------------------------------------
 # BLUESKY CLIENT
@@ -280,7 +312,7 @@ Choose the ONE news item that:
 Reply with ONLY the number. Example: 4"""
 
     log("  [Pick] AI selecting best news...")
-    response = gemini.generate_content(prompt)
+    response = gemini_call(prompt)
     pick = response.text.strip().strip(".")
     try:
         idx = int(pick) - 1
@@ -336,7 +368,7 @@ Good example:
 Return ONLY the post text. Nothing else."""
 
     log("  [Generate] Writing with Gemini...")
-    response = gemini.generate_content(prompt)
+    response = gemini_call(prompt)
     post = response.text.strip().strip('"').strip("'")
     if len(post) > 280:
         post = post[:277] + "..."
@@ -367,7 +399,7 @@ Reply with ONLY one of:
 VALID: <one sentence reason>
 INVALID: <one sentence reason>"""
 
-    response = gemini.generate_content(prompt)
+    response = gemini_call(prompt)
     verdict = response.text.strip()
     is_valid = verdict.upper().startswith("VALID")
     log(f"  [Verify] {verdict[:80]}")
@@ -472,19 +504,10 @@ def create_and_post():
 # ----------------------------------------------
 
 def run_scheduler():
-    schedule.every().day.at("02:00").do(create_and_post)
-    schedule.every().day.at("5:00").do(create_and_post)
-    schedule.every().day.at("8:00").do(create_and_post)
-    schedule.every().day.at("11:00").do(create_and_post)
-    schedule.every().day.at("14:00").do(create_and_post)
-    schedule.every().day.at("16:00").do(create_and_post)
-    schedule.every().day.at("18:00").do(create_and_post)
+    schedule.every().day.at("08:00").do(create_and_post)
+    schedule.every().day.at("12:00").do(create_and_post)
     schedule.every().day.at("17:00").do(create_and_post)
-    schedule.every().day.at("18:00").do(create_and_post)
-    schedule.every().day.at("20:00").do(create_and_post)
     schedule.every().day.at("21:00").do(create_and_post)
-    schedule.every().day.at("23:00").do(create_and_post)
-    
     log("[Scheduler] Posts at 08:00, 12:00, 17:00, 21:00 UTC daily.")
     while True:
         schedule.run_pending()
@@ -561,11 +584,11 @@ def test_mastodon():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
-@app.route("/test-gemini")
-def test_gemini():
+@app.route("/test-groq")
+def test_groq():
     try:
-        r = gemini.generate_content("Write a 10-word post about AI.")
-        return jsonify({"ok": True, "response": r.text.strip()})
+        r = gemini_call("Write a 10-word post about AI.")
+        return jsonify({"ok": True, "model": "llama-3.3-70b-versatile", "response": r.text.strip()})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
