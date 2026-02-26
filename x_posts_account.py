@@ -84,7 +84,7 @@ except Exception as e:
 # ----------------------------------------------
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini = genai.GenerativeModel("gemini-1.5-flash")
+    gemini = genai.GenerativeModel("gemini-2.5-flash")
     test = gemini.generate_content("Say OK")
     log(f"Gemini connected: {test.text.strip()[:20]}")
 except Exception as e:
@@ -472,10 +472,19 @@ def create_and_post():
 # ----------------------------------------------
 
 def run_scheduler():
-    schedule.every().day.at("08:00").do(create_and_post)
-    schedule.every().day.at("12:00").do(create_and_post)
+    schedule.every().day.at("02:00").do(create_and_post)
+    schedule.every().day.at("5:00").do(create_and_post)
+    schedule.every().day.at("8:00").do(create_and_post)
+    schedule.every().day.at("11:00").do(create_and_post)
+    schedule.every().day.at("14:00").do(create_and_post)
+    schedule.every().day.at("16:00").do(create_and_post)
+    schedule.every().day.at("18:00").do(create_and_post)
     schedule.every().day.at("17:00").do(create_and_post)
+    schedule.every().day.at("18:00").do(create_and_post)
+    schedule.every().day.at("20:00").do(create_and_post)
     schedule.every().day.at("21:00").do(create_and_post)
+    schedule.every().day.at("23:00").do(create_and_post)
+    
     log("[Scheduler] Posts at 08:00, 12:00, 17:00, 21:00 UTC daily.")
     while True:
         schedule.run_pending()
