@@ -347,7 +347,7 @@ def generate_post():
 
     past_str = "\n".join(f"- {p}" for p in past) if past else "None yet."
 
-    prompt = f"""You are a viral social media writer. Write an engaging post based on this real news:
+    prompt = f"""You are a social media writer. Write an engaging post based on this real news:
 
 {news_context}
 
@@ -355,12 +355,14 @@ PREVIOUSLY POSTED (do NOT repeat these topics):
 {past_str}
 
 Write ONE post that:
-- Opens with a hook (shocking fact, bold statement, or question)
-- Explains the news in simple, exciting language
+- Opens with a hook (question, observation, or real fact from the news)
+- Explains the news in simple, engaging language
 - Adds a "why this matters" insight
 - Has 2-3 hashtags at the end
 - Is under 260 characters total
 - Contains NO URLs
+- Do NOT invent statistics or percentages not mentioned in the news
+- Use words like "may", "could", "is changing" instead of fake numbers
 
 Good example:
 "Google's new AI just outscored human doctors in medical diagnosis tests. Healthcare is about to change forever. Are we ready? #AI #HealthTech #FutureOfMedicine"
@@ -388,12 +390,19 @@ def verify_post(text):
     )
     evidence_str = evidence if evidence else "No specific evidence found."
 
-    prompt = f"""You are a fact-checking AI. Evaluate this social media post:
+    prompt = f"""You are a social media content moderator. Evaluate this post:
 
 POST: "{text}"
 
 Web evidence:
 {evidence_str}
+
+Rules:
+- Mark VALID if the post is a general opinion, trend observation, or commentary (even without hard proof)
+- Mark VALID if the post is based on real news or widely known facts
+- Mark VALID if the post uses soft language like "may", "could", "is changing"
+- Mark INVALID ONLY if the post contains clearly false facts, hate speech, or harmful content
+- Do NOT reject posts just because a specific statistic is unverified
 
 Reply with ONLY one of:
 VALID: <one sentence reason>
@@ -504,13 +513,12 @@ def create_and_post():
 # ----------------------------------------------
 
 def run_scheduler():
-    schedule.every().day.at("2:00").do(create_and_post)
-    schedule.every().day.at("5:00").do(create_and_post)
-    schedule.every().day.at("8:00").do(create_and_post)
+    schedule.every().day.at("02:00").do(create_and_post)
+    schedule.every().day.at("05:00").do(create_and_post)
+    schedule.every().day.at("08:00").do(create_and_post)
     schedule.every().day.at("11:00").do(create_and_post)
     schedule.every().day.at("14:00").do(create_and_post)
     schedule.every().day.at("16:00").do(create_and_post)
-    schedule.every().day.at("18:00").do(create_and_post)
     schedule.every().day.at("17:00").do(create_and_post)
     schedule.every().day.at("18:00").do(create_and_post)
     schedule.every().day.at("20:00").do(create_and_post)
