@@ -290,7 +290,7 @@ def pick_best_news(news_items, past_snippets):
         return {}
 
     news_list = "\n\n".join(
-        f"[{i+1}] {n['title']}\n    {n['body'][:150]}"
+        f"[{i+1}] {n['title']}\n    {n['body'][:250]}"
         for i, n in enumerate(news_items[:15])
     )
     past_str = "\n".join(f"- {p}" for p in past_snippets) if past_snippets else "None."
