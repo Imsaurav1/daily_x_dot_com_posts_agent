@@ -278,16 +278,27 @@ def verify_post(text: str) -> tuple:
     evidence = "\n".join(
         f"- {r.get('title','')}: {r.get('body','')[:100]}" for r in results
     )
-    prompt = f"""You are a fact-checking AI. Evaluate this social media post:
-
-POST: "{text}"
-
-Web evidence:
-{evidence if evidence else 'No specific evidence found.'}
-
-Reply with ONLY one of:
-VALID: <one sentence reason>
-INVALID: <one sentence reason>"""
+    prompt = f"""You are a social media expert creating engaging posts.
+        
+        Topic: {POST_TOPIC}
+        
+        Recent context:
+        {context if context else 'Use your knowledge.'}
+        
+        Previously posted (DO NOT repeat):
+        {past_str}
+        
+        Write ONE post that:
+        - Is 280 characters or less
+        - Naturally weaves 2-3 hashtags INSIDE the text, not at the end
+        - Is specific, data-driven, and references real current trends
+        - Has a hook in the first line
+        - Is factually accurate
+        
+        Example format:
+        "GPT-4 cut our #StartupCosts by 40% in Q1. Here's how we used #AI to automate customer support and save 200 hrs/month. #TechProductivity"
+        
+        Return ONLY the post text. No quotes. No preamble."""
 
     response = gemini.generate_content(prompt)
     verdict = response.text.strip()
