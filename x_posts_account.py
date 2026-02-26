@@ -504,10 +504,18 @@ def create_and_post():
 # ----------------------------------------------
 
 def run_scheduler():
-    schedule.every().day.at("08:00").do(create_and_post)
-    schedule.every().day.at("12:00").do(create_and_post)
+    schedule.every().day.at("2:00").do(create_and_post)
+    schedule.every().day.at("5:00").do(create_and_post)
+    schedule.every().day.at("8:00").do(create_and_post)
+    schedule.every().day.at("11:00").do(create_and_post)
+    schedule.every().day.at("14:00").do(create_and_post)
+    schedule.every().day.at("16:00").do(create_and_post)
+    schedule.every().day.at("18:00").do(create_and_post)
     schedule.every().day.at("17:00").do(create_and_post)
+    schedule.every().day.at("18:00").do(create_and_post)
+    schedule.every().day.at("20:00").do(create_and_post)
     schedule.every().day.at("21:00").do(create_and_post)
+    schedule.every().day.at("23:00").do(create_and_post)
     log("[Scheduler] Posts at 08:00, 12:00, 17:00, 21:00 UTC daily.")
     while True:
         schedule.run_pending()
