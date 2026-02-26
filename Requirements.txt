@@ -2,5 +2,5 @@ flask==3.0.3
 pymongo==4.7.3
 schedule==1.2.2
 requests==2.32.3
-google-generativeai==0.8.3
+groq==0.11.0
 duckduckgo-search==6.2.6
